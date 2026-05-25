@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from . import ensure_node_root_on_path
 from .download_utils import validate_required_models
 
 
@@ -76,6 +77,8 @@ def _build_scheduler(config):
 
 
 def load_highsync_model(models_dir, weight_dtype="fp16"):
+    ensure_node_root_on_path()
+
     try:
         import torch
         from diffusers import AutoencoderKL

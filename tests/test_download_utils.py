@@ -1,8 +1,20 @@
+import sys
 from pathlib import Path
 
 import pytest
 
+import highsync_wrapper
 from highsync_wrapper.download_utils import validate_required_models
+
+
+def test_ensure_node_root_on_path_adds_local_package_root(monkeypatch):
+    node_root = Path(__file__).resolve().parents[1]
+    filtered_path = [path for path in sys.path if str(node_root) not in path]
+    monkeypatch.setattr(sys, "path", filtered_path)
+
+    assert str(node_root) not in sys.path
+    assert highsync_wrapper.ensure_node_root_on_path() == node_root
+    assert sys.path[0] == str(node_root)
 
 
 def test_validate_required_models_reports_missing_files(tmp_path):
