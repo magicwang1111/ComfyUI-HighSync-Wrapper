@@ -233,8 +233,12 @@ class ImageProcessor:
         pixel_values_ref_img_all, bbox_final_all, frames_list_chunk = [], [], []
 
         jumps = differ(bbox_list)
-        for jump in jumps:
-            print(jump)
+        print(
+            f"[HighSync] Face tracking: split {len(frames)} frame(s) into "
+            f"{len(jumps)} stable face segment(s).",
+            flush=True,
+        )
+        for segment_index, jump in enumerate(jumps, start=1):
             pixel_values_ref_img_list, bbox_final_list = [], []
 
             bbox_chunk = bbox_list[jump[0]:jump[1]+1]
@@ -242,7 +246,12 @@ class ImageProcessor:
 
             h_max, h_min = find_max_h(bbox_chunk)
             use_h = h_max < 1.4*h_min
-            print(f"use h : {use_h}")
+            print(
+                f"[HighSync] Face segment {segment_index}/{len(jumps)}: "
+                f"local frames {jump[0]}-{jump[1]} "
+                f"({len(frames_chunk)} frame(s)), stable_crop_height={use_h}.",
+                flush=True,
+            )
 
             for frame, bbox in zip(frames_chunk, bbox_chunk):
 

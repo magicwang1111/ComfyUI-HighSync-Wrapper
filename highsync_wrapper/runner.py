@@ -19,6 +19,10 @@ from .media_utils import (
 )
 
 
+def _log(message):
+    print(f"[HighSync] {message}", flush=True)
+
+
 def _maybe_throw_if_interrupted():
     try:
         import comfy.model_management as model_management
@@ -132,24 +136,46 @@ def _run_generation_chunk(
     inference_steps,
     cfg_scale,
 ):
+    chunk_frame_count = len(frames_video)
+    chunk_global_start = count_img
+    chunk_global_end = count_img + chunk_frame_count - 1
+    _log(
+        f"Stage 4/6 face tracking: frames {chunk_global_start}-{chunk_global_end} "
+        f"({chunk_frame_count} frame(s))."
+    )
     source_image_pixels_all, bbox_all, frame_list_all = image_processor.preprocess_frames_jump(frames_video)
 
     img_size = (int(config.data.source_image.width), int(config.data.source_image.height))
     sample_frames = int(config.data.n_sample_frames)
     mask_path = str(config.mask_path)
+    segment_count = len(frame_list_all)
 
-    for source_image_pixels_list, bbox_list, frame_list in zip(source_image_pixels_all, bbox_all, frame_list_all):
+    for segment_index, (source_image_pixels_list, bbox_list, frame_list) in enumerate(
+        zip(source_image_pixels_all, bbox_all, frame_list_all),
+        start=1,
+    ):
         _maybe_throw_if_interrupted()
 
         if not frame_list:
             continue
 
+        segment_start = count_img
+        segment_end = count_img + len(frame_list) - 1
         if bbox_list[0] != (0, 0, 0, 0):
+            _log(
+                f"Stage 4/6 inference segment {segment_index}/{segment_count}: "
+                f"global frames {segment_start}-{segment_end} ({len(frame_list)} frame(s)), "
+                f"{inference_steps} diffusion step(s)."
+            )
             audio_tensor = audio_fea_final[:, count_img: count_img + len(frame_list)]
             main_length = len(frame_list)
             diff = sample_frames - main_length
 
             if diff > 0:
+                _log(
+                    f"Stage 4/6 segment {segment_index}/{segment_count}: padded "
+                    f"{main_length} -> {sample_frames} frame(s) for the HighSync window."
+                )
                 source_image_pixels_list.extend([source_image_pixels_list[-1]] * diff)
                 audio_tensor = torch.cat((audio_tensor, audio_tensor[:, -1:].repeat(1, diff, 1, 1)), dim=1)
 
@@ -168,9 +194,14 @@ def _run_generation_chunk(
                     num_inference_steps=int(inference_steps),
                     guidance_scale=float(cfg_scale),
                     generator=generator,
+                    progress_label=f"HighSync seg {segment_index}/{segment_count} frames {segment_start}-{segment_end}",
                 )
 
             _empty_cache(device)
+            _log(
+                f"Stage 4/6 blend segment {segment_index}/{segment_count}: "
+                f"writing {main_length} generated frame(s) back to original resolution."
+            )
 
             images_out = pipeline_output.videos.squeeze(0).permute(1, 2, 3, 0).cpu().numpy()[:main_length]
             images_out = np.clip(images_out * 255, 0, 255).astype(np.uint8)
@@ -192,6 +223,10 @@ def _run_generation_chunk(
 
                 count_img += 1
         else:
+            _log(
+                f"Stage 4/6 segment {segment_index}/{segment_count}: "
+                f"no face box, copying frames {segment_start}-{segment_end} unchanged."
+            )
             for frame in frame_list:
                 _append_original_frame(output_frames_rgb, frame)
                 count_img += 1
@@ -227,12 +262,27 @@ def run_highsync(
     preprocess_chunk_frames = max(12, int(preprocess_chunk_frames))
 
     task = create_task_dir()
+    _log(
+        f"Stage 1/6 start: input_fps={input_fps}, target_fps={TARGET_FPS}, "
+        f"max_frames={max_frames}, inference_steps={inference_steps}, cfg_scale={cfg_scale}, "
+        f"task_dir={task['task_dir']}"
+    )
 
     frames_rgb = images_to_uint8_rgb(images)
+    input_frame_count = len(frames_rgb)
     frames_rgb = resample_frames_to_fps(frames_rgb, input_fps=input_fps, output_fps=TARGET_FPS, max_frames=max_frames)
     frames_bgr = [cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) for frame in frames_rgb]
     initial_duration_sec = len(frames_bgr) / float(TARGET_FPS)
+    _log(
+        f"Stage 1/6 media prepared: {input_frame_count} input frame(s) -> "
+        f"{len(frames_bgr)} frame(s) at {TARGET_FPS} FPS "
+        f"({initial_duration_sec:.2f}s)."
+    )
 
+    _log(
+        f"Stage 2/6 audio features: converting audio to mono {TARGET_AUDIO_SR} Hz"
+        f"{' and denoising' if denoise_audio else ''}."
+    )
     _, _, feature_audio_path = _prepare_audio_files(
         task=task,
         audio=audio,
@@ -243,6 +293,7 @@ def run_highsync(
         model_cache=highsync_model,
     )
 
+    _log("Stage 2/6 audio features: running Whisper audio feature extraction.")
     whisper_feature = audio_processor.audio2feat(str(feature_audio_path))
     whisper_chunks = audio_processor.feature2chunks(feature_array=whisper_feature, fps=TARGET_FPS)
     audio_frame_num = int(whisper_chunks.shape[0])
@@ -253,6 +304,10 @@ def run_highsync(
     frames_bgr = frames_bgr[:video_length]
     audio_fea_final = torch.as_tensor(whisper_chunks[:video_length], dtype=pipeline.vae.dtype, device=pipeline.vae.device)
     audio_fea_final = audio_fea_final.unsqueeze(0)
+    _log(
+        f"Stage 3/6 alignment: video has {len(frames_bgr)} frame(s), "
+        f"audio features cover {audio_frame_num} frame(s), processing {video_length} frame(s)."
+    )
 
     final_duration_sec = video_length / float(TARGET_FPS)
     output_audio, mux_audio_path, _ = _prepare_audio_files(
@@ -287,7 +342,7 @@ def run_highsync(
             break
 
         if (count_motion % preprocess_chunk_frames == 0) or finish:
-            print(f"[HighSync] processing frames {count_img}-{count_motion} / {video_length}")
+            _log(f"Stage 4/6 chunk queued: frames {count_img}-{count_motion - 1} / {video_length}.")
             count_img = _run_generation_chunk(
                 pipeline=pipeline,
                 image_processor=image_processor,
@@ -311,6 +366,7 @@ def run_highsync(
         raise RuntimeError("HighSync finished without producing output frames.")
 
     output_frames = np.ascontiguousarray(np.stack(output_frames_rgb))
+    _log(f"Stage 5/6 encoding: writing {len(output_frames)} frame(s) to MP4.")
     no_audio_path = encode_rgb_frames_to_mp4(output_frames, task["media_dir"] / "highsync_no_audio.mp4", fps=TARGET_FPS)
     final_video_path = mux_video_audio(no_audio_path, mux_audio_path, task["task_dir"] / "final.mp4")
 
@@ -320,4 +376,5 @@ def run_highsync(
         for path in (task["media_dir"], task["frames_dir"], task["logs_dir"]):
             shutil.rmtree(path, ignore_errors=True)
 
+    _log(f"Stage 6/6 done: final video saved to {final_video_path.resolve()}")
     return output_images, output_audio, TARGET_FPS, str(final_video_path.resolve())

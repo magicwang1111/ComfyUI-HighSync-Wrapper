@@ -216,7 +216,7 @@ class FaceAnimatePipeline(DiffusionPipeline):
             extra_step_kwargs["generator"] = generator
         return extra_step_kwargs
 
-    def decode_latents(self, latents):
+    def decode_latents(self, latents, progress_label=None):
         """
         Decode the latents to produce a video.
 
@@ -232,7 +232,8 @@ class FaceAnimatePipeline(DiffusionPipeline):
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
         # video = self.vae.decode(latents).sample
         video = []
-        for frame_idx in tqdm(range(latents.shape[0])):
+        decode_desc = f"{progress_label} decode" if progress_label else "HighSync decode"
+        for frame_idx in tqdm(range(latents.shape[0]), desc=decode_desc):
             video.append(self.vae.decode(
                 latents[frame_idx: frame_idx + 1]).sample)
         video = torch.cat(video)
@@ -266,6 +267,8 @@ class FaceAnimatePipeline(DiffusionPipeline):
         callback_steps: Optional[int] = 1,
         **kwargs,
     ):
+
+        progress_label = kwargs.get("progress_label", "HighSync segment")
 
         # Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
@@ -350,6 +353,8 @@ class FaceAnimatePipeline(DiffusionPipeline):
         mask_main = mask_main.repeat(1,1,video_length,1,1)
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
+            if hasattr(progress_bar, "set_description"):
+                progress_bar.set_description(f"{progress_label} diffusion")
             for t_i, t in enumerate(timesteps):
 
                 latents = latents*mask_main + gt_encode*(1-mask_main)
@@ -475,7 +480,7 @@ class FaceAnimatePipeline(DiffusionPipeline):
 
         latents = latents*mask_main + gt_encode*(1-mask_main)
         # Post-processing
-        latents = self.decode_latents(latents)  # (b, c, f, h, w)
+        latents = self.decode_latents(latents, progress_label=progress_label)  # (b, c, f, h, w)
 
         # Convert to tensor
         if output_type == "tensor":
