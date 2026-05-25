@@ -1,0 +1,17 @@
+accelerate>=0.28.0
+diffusers>=0.24.0
+einops>=0.8.0
+huggingface-hub>=0.25.2
+omegaconf>=2.3.0
+safetensors
+transformers>=4.39.2
+torchvision
+torchaudio
+librosa>=0.10.2
+soundfile>=0.13.1
+opencv-python>=4.9.0.80
+pillow>=10.3.0
+imageio
+insightface>=0.7.3
+mediapipe>=0.10.14
+onnxruntime-gpu>=1.18.0
